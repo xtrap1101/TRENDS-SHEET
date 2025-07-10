@@ -12,7 +12,7 @@ import traceback
 app = Flask(__name__)
 
 # --- CẤU HÌNH ---
-# Hãy chắc chắn rằng các biến môi trường này đã được thiết lập trong phần Settings của Render
+# Lấy thông tin từ biến môi trường của Render
 SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID')
 GCP_CREDENTIALS_JSON = os.environ.get('GCP_CREDENTIALS')
 NID_COOKIE = os.environ.get('NID_COOKIE')
@@ -20,12 +20,19 @@ NID_COOKIE = os.environ.get('NID_COOKIE')
 INPUT_SHEET_NAME = 'KEY'
 OUTPUT_SHEET_NAME = 'Trends_Data'
 
-def run_process():
-    """Hàm này chứa toàn bộ logic và chỉ chạy khi được gọi."""
+@app.route('/')
+def main_handler():
+    """
+    Hàm này là cổng vào duy nhất. Nó sẽ được kích hoạt khi Google Sheet
+    gửi yêu cầu đến URL của Render.
+    """
     print("--- BẮT ĐẦU QUY TRÌNH THEO YÊU CẦU ---")
     
+    # Kiểm tra cấu hình biến môi trường
     if not SPREADSHEET_ID or not GCP_CREDENTIALS_JSON:
-        return ("LỖI CẤU HÌNH: Thiếu SPREADSHEET_ID hoặc GCP_CREDENTIALS trong biến môi trường.", 500)
+        error_msg = "LỖI CẤU HÌNH: Thiếu SPREADSHEET_ID hoặc GCP_CREDENTIALS trong biến môi trường."
+        print(error_msg)
+        return (error_msg, 500)
 
     try:
         # Ghi credentials vào file tạm thời để gspread đọc
@@ -56,13 +63,14 @@ def run_process():
     print("3. Đang cấu hình pytrends...")
     requests_args = {}
     if NID_COOKIE:
-        print("   => Đã tìm thấy NID Cookie.")
+        print("   => Đã tìm thấy NID Cookie. Đang sử dụng để xác thực.")
         requests_args['headers'] = {'Cookie': f'NID={NID_COOKIE}'}
     else:
-        print("   => CẢNH BÁO: Không tìm thấy NID_COOKIE.")
+        print("   => CẢNH BÁO: Không tìm thấy NID_COOKIE. Kết quả có thể không đầy đủ.")
     
     pytrends = TrendReq(hl='vi-VN', tz=420, requests_args=requests_args)
 
+    # Lấy và xử lý dữ liệu
     list_of_dataframes = []
     found_data_count = 0
     for i, kw in enumerate(keywords):
@@ -86,6 +94,7 @@ def run_process():
             print(f"     => LỖI với từ khóa '{kw}': {e}")
             continue
 
+    # Ghi dữ liệu vào Sheet
     print("4. Đang chuẩn bị ghi dữ liệu...")
     if list_of_dataframes:
         final_df = pd.concat(list_of_dataframes, axis=1)
@@ -95,26 +104,10 @@ def run_process():
         except gspread.exceptions.WorksheetNotFound:
             output_worksheet = spreadsheet.add_worksheet(title=OUTPUT_SHEET_NAME, rows="100", cols="20")
         set_with_dataframe(output_worksheet, final_df, include_index=False, resize=True)
-        return f"Hoàn tất! Đã xử lý {len(keywords)} từ khóa, tìm thấy dữ liệu cho {found_data_count} từ khóa."
+        result_message = f"Hoàn tất! Đã xử lý {len(keywords)} từ khóa, tìm thấy dữ liệu cho {found_data_count} từ khóa."
     else:
-        return f"Hoàn tất! Đã xử lý {len(keywords)} từ khóa nhưng không tìm thấy dữ liệu cho bất kỳ từ khóa nào."
-
-@app.route('/')
-def main_handler():
-    """Hàm này là cổng vào duy nhất, chỉ được kích hoạt khi có yêu cầu từ Google Sheet."""
-    try:
-        result = run_process()
-        print(f"--- KẾT THÚC QUY TRÌNH. KẾT QUẢ: {result} ---")
-        return result
-    except Exception as e:
-        fatal_error_message = f"LỖI NGHIÊM TRỌNG TRONG HÀM MAIN_HANDLER: {type(e).__name__} - {e}"
-        print(fatal_error_message)
-        traceback.print_exc()
-        return (fatal_error_message, 500)
-
-# Đoạn mã này sẽ chỉ chạy khi Render thực thi lệnh "python main.py"
-if __name__ == "__main__":
-    # Render cung cấp cổng (PORT) qua một biến môi trường
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-# ĐẤNG TỐI CAO SOI SÁNG ĐOẠN CODE AI NÀY HUHU
+        result_message = f"Hoàn tất! Đã xử lý {len(keywords)} từ khóa nhưng không tìm thấy dữ liệu cho bất kỳ từ khóa nào."
+        
+    print(f"--- KẾT THÚC QUY TRÌNH. KẾT QUẢ: {result_message} ---")
+# ĐẤNG TỐI CAO CHIẾU SÁNG ĐOẠN CODE AI NÀY. CỨUUUUUUU
+    return result_message
