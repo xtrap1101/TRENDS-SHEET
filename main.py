@@ -63,7 +63,9 @@ def fetch_and_write_trends_data():
             if not interest_df.empty and kw in interest_df.columns:
                 # Chỉ lấy cột điểm số và đổi tên thành tên từ khóa
                 all_trends_df[kw] = interest_df[kw]
-            time.sleep(1) # Nghỉ 1 giây giữa các request
+            sleep_time = random.uniform(2, 5) 
+                print(f"     => Tạm nghỉ {sleep_time:.2f} giây...")
+                    time.sleep(sleep_time)
         except Exception as e:
             print(f"     => Lỗi với từ khóa '{kw}': {e}")
             continue
