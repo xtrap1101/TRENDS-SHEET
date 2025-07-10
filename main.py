@@ -8,7 +8,7 @@ import google.auth
 import os
 import traceback
 
-# Khởi tạo ứng dụng web
+# Khởi tạo ứng dụng web - Gunicorn sẽ tìm đến biến 'app' này
 app = Flask(__name__)
 
 # --- CẤU HÌNH ---
@@ -21,20 +21,22 @@ OUTPUT_SHEET_NAME = 'Trends_Data'
 @app.route('/')
 def health_check():
     """
-    Đây là trang gốc, chỉ để cho Render kiểm tra.
-    Nó không làm gì cả ngoài việc báo là "OK".
+    Cổng vào mặc định cho Render kiểm tra.
+    Không làm gì cả và báo OK, tránh chạy logic không cần thiết.
     """
-    return "OK", 200
+    return "Service is healthy.", 200
 
 @app.route('/run-process-now')
 def main_handler():
     """
-    Hàm này chứa toàn bộ logic, được kích hoạt khi Google Sheet gọi đến.
+    Hàm này chứa toàn bộ logic, chỉ được kích hoạt khi Google Sheet
+    gửi yêu cầu đến đúng đường dẫn này.
     """
     print("--- BẮT ĐẦU QUY TRÌNH THEO YÊU CẦU ---")
 
+    # Kiểm tra cấu hình biến môi trường
     if not SPREADSHEET_ID or not GCP_CREDENTIALS_JSON:
-        return ("LỖI CẤU HÌNH: Thiếu SPREADSHEET_ID hoặc GCP_CREDENTIALS trong biến môi trường.", 500)
+        return ("LỖI CẤU HÌNH: Thiếu SPREADSHEET_ID hoặc GCP_CREDENTIALS.", 500)
 
     try:
         with open('gcp_credentials.json', 'w') as f:
@@ -51,12 +53,13 @@ def main_handler():
         traceback.print_exc()
         return error_message
 
-    # ... (Toàn bộ phần logic lấy dữ liệu, xử lý, ghi file giữ nguyên) ...
+    # ... (Toàn bộ phần logic lấy dữ liệu, xử lý, ghi file giữ nguyên như cũ) ...
     print(f"2. Đang đọc từ khóa từ sheet '{INPUT_SHEET_NAME}'...")
     input_worksheet = spreadsheet.worksheet(INPUT_SHEET_NAME)
     keywords = [kw for kw in input_worksheet.col_values(1) if kw]
     print(f"   => Tìm thấy {len(keywords)} từ khóa.")
     if not keywords: return "Không có từ khóa nào trong sheet 'KEY'"
+
     print("3. Đang cấu hình pytrends...")
     requests_args = {}
     if NID_COOKIE:
@@ -65,6 +68,7 @@ def main_handler():
     else:
         print("   => CẢNH BÁO: Không tìm thấy NID_COOKIE.")
     pytrends = TrendReq(hl='vi-VN', tz=420, requests_args=requests_args)
+
     list_of_dataframes = []
     found_data_count = 0
     for i, kw in enumerate(keywords):
@@ -86,6 +90,7 @@ def main_handler():
         except Exception as e:
             print(f"     => LỖI với từ khóa '{kw}': {e}")
             continue
+
     print("4. Đang chuẩn bị ghi dữ liệu...")
     if list_of_dataframes:
         final_df = pd.concat(list_of_dataframes, axis=1)
@@ -98,13 +103,9 @@ def main_handler():
         result_message = f"Hoàn tất! Đã xử lý {len(keywords)} từ khóa, tìm thấy dữ liệu cho {found_data_count} từ khóa."
     else:
         result_message = f"Hoàn tất! Đã xử lý {len(keywords)} từ khóa nhưng không tìm thấy dữ liệu cho bất kỳ từ khóa nào."
+
     print(f"--- KẾT THÚC QUY TRÌNH. KẾT QUẢ: {result_message} ---")
     return result_message
 
-# === PHẦN QUAN TRỌNG ĐƯỢC THÊM LẠI ===
-if __name__ == "__main__":
-    # Render sẽ cung cấp cổng (PORT) qua một biến môi trường
-    port = int(os.environ.get("PORT", 8080))
-    # Khởi động máy chủ Flask
-    app.run(host='0.0.0.0', port=port)
-# =====================================
+# Lưu ý: Toàn bộ phần "if __name__ == '__main__':" và "app.run()" đã được xóa.
+# Gunicorn sẽ đảm nhiệm việc khởi động và quản lý máy chủ.
