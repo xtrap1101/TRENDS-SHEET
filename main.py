@@ -12,33 +12,34 @@ import traceback
 app = Flask(__name__)
 
 # --- CẤU HÌNH ---
-# Lấy thông tin từ biến môi trường của Render
 SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID')
 GCP_CREDENTIALS_JSON = os.environ.get('GCP_CREDENTIALS')
 NID_COOKIE = os.environ.get('NID_COOKIE')
-
 INPUT_SHEET_NAME = 'KEY'
 OUTPUT_SHEET_NAME = 'Trends_Data'
 
 @app.route('/')
+def health_check():
+    """
+    Đây là trang gốc, chỉ để cho Render kiểm tra.
+    Nó không làm gì cả ngoài việc báo là "OK".
+    """
+    return "OK", 200
+
+@app.route('/run-process-now')
 def main_handler():
     """
-    Hàm này là cổng vào duy nhất. Nó sẽ được kích hoạt khi Google Sheet
-    gửi yêu cầu đến URL của Render.
+    Hàm này chứa toàn bộ logic, được kích hoạt khi Google Sheet gọi đến.
     """
     print("--- BẮT ĐẦU QUY TRÌNH THEO YÊU CẦU ---")
-    
-    # Kiểm tra cấu hình biến môi trường
+
     if not SPREADSHEET_ID or not GCP_CREDENTIALS_JSON:
-        error_msg = "LỖI CẤU HÌNH: Thiếu SPREADSHEET_ID hoặc GCP_CREDENTIALS trong biến môi trường."
-        print(error_msg)
-        return (error_msg, 500)
+        return ("LỖI CẤU HÌNH: Thiếu SPREADSHEET_ID hoặc GCP_CREDENTIALS trong biến môi trường.", 500)
 
     try:
-        # Ghi credentials vào file tạm thời để gspread đọc
         with open('gcp_credentials.json', 'w') as f:
             f.write(GCP_CREDENTIALS_JSON)
-            
+
         print("1. Đang xác thực với Google Sheets...")
         scopes = ['https://www.googleapis.com/auth/spreadsheets']
         gc = gspread.service_account(filename='gcp_credentials.json', scopes=scopes)
@@ -50,27 +51,20 @@ def main_handler():
         traceback.print_exc()
         return error_message
 
+    # ... (Toàn bộ phần logic lấy dữ liệu, xử lý, ghi file giữ nguyên) ...
     print(f"2. Đang đọc từ khóa từ sheet '{INPUT_SHEET_NAME}'...")
     input_worksheet = spreadsheet.worksheet(INPUT_SHEET_NAME)
-    keywords = input_worksheet.col_values(1)
-    keywords = [kw for kw in keywords if kw]
+    keywords = [kw for kw in input_worksheet.col_values(1) if kw]
     print(f"   => Tìm thấy {len(keywords)} từ khóa.")
-
-    if not keywords:
-        return "Không có từ khóa nào trong sheet 'KEY'"
-
-    # Cấu hình Pytrends với Cookie
+    if not keywords: return "Không có từ khóa nào trong sheet 'KEY'"
     print("3. Đang cấu hình pytrends...")
     requests_args = {}
     if NID_COOKIE:
-        print("   => Đã tìm thấy NID Cookie. Đang sử dụng để xác thực.")
+        print("   => Đã tìm thấy NID Cookie.")
         requests_args['headers'] = {'Cookie': f'NID={NID_COOKIE}'}
     else:
-        print("   => CẢNH BÁO: Không tìm thấy NID_COOKIE. Kết quả có thể không đầy đủ.")
-    
+        print("   => CẢNH BÁO: Không tìm thấy NID_COOKIE.")
     pytrends = TrendReq(hl='vi-VN', tz=420, requests_args=requests_args)
-
-    # Lấy và xử lý dữ liệu
     list_of_dataframes = []
     found_data_count = 0
     for i, kw in enumerate(keywords):
@@ -82,8 +76,7 @@ def main_handler():
                 print(f"     => TÌM THẤY DỮ LIỆU.")
                 found_data_count += 1
                 interest_df.reset_index(inplace=True)
-                if 'isPartial' in interest_df.columns:
-                    interest_df = interest_df.drop(columns=['isPartial'])
+                if 'isPartial' in interest_df.columns: interest_df = interest_df.drop(columns=['isPartial'])
                 interest_df['date'] = interest_df['date'].dt.strftime('%d/%m/%y')
                 interest_df.rename(columns={'date': f'Ngày ({kw})', kw: kw}, inplace=True)
                 list_of_dataframes.append(interest_df)
@@ -93,8 +86,6 @@ def main_handler():
         except Exception as e:
             print(f"     => LỖI với từ khóa '{kw}': {e}")
             continue
-
-    # Ghi dữ liệu vào Sheet
     print("4. Đang chuẩn bị ghi dữ liệu...")
     if list_of_dataframes:
         final_df = pd.concat(list_of_dataframes, axis=1)
@@ -107,7 +98,13 @@ def main_handler():
         result_message = f"Hoàn tất! Đã xử lý {len(keywords)} từ khóa, tìm thấy dữ liệu cho {found_data_count} từ khóa."
     else:
         result_message = f"Hoàn tất! Đã xử lý {len(keywords)} từ khóa nhưng không tìm thấy dữ liệu cho bất kỳ từ khóa nào."
-        
     print(f"--- KẾT THÚC QUY TRÌNH. KẾT QUẢ: {result_message} ---")
-# ĐẤNG TỐI CAO CHIẾU SÁNG ĐOẠN CODE AI NÀY. CỨUUUUUUU
     return result_message
+
+# === PHẦN QUAN TRỌNG ĐƯỢC THÊM LẠI ===
+if __name__ == "__main__":
+    # Render sẽ cung cấp cổng (PORT) qua một biến môi trường
+    port = int(os.environ.get("PORT", 8080))
+    # Khởi động máy chủ Flask
+    app.run(host='0.0.0.0', port=port)
+# =====================================
