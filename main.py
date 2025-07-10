@@ -6,26 +6,20 @@ from pytrends.request import TrendReq
 import gspread
 from gspread_dataframe import set_with_dataframe
 import time
-import random 
+import random
 
-# Khởi tạo ứng dụng Flask
 app = Flask(__name__)
 
-# --- HÀM LOGIC CỐT LÕI ---
 def fetch_and_write_trends_data():
-    """
-    Hàm này chứa toàn bộ logic xử lý
-    """
-    print("--- BẮT ĐẦU QUY TRÌNH LẤY DỮ LIỆU ---")
-
-    # 1. Đọc cấu hình
-    print("1. Đang đọc cấu hình...")
+    print("--- BẮT ĐẦU QUY TRÌNH ---")
+    
+    # 1. Đọc cấu hình từ Biến Môi trường
     gcp_credentials_str = os.environ.get('GCP_CREDENTIALS')
     spreadsheet_id = os.environ.get('SPREADSHEET_ID')
-    google_nid_cookie = os.environ.get('GOOGLE_NID_COOKIE')
+    nid_cookie_value = os.environ.get('NID_COOKIE') # Đọc giá trị cookie
 
-    if not all([gcp_credentials_str, spreadsheet_id, google_nid_cookie]):
-        raise ValueError("Thiếu một trong các biến môi trường: GCP_CREDENTIALS, SPREADSHEET_ID, GOOGLE_NID_COOKIE")
+    if not all([gcp_credentials_str, spreadsheet_id, nid_cookie_value]):
+        raise ValueError("Thiếu một trong các biến môi trường: GCP_CREDENTIALS, SPREADSHEET_ID, NID_COOKIE")
     
     gcp_credentials_dict = json.loads(gcp_credentials_str)
     
@@ -35,20 +29,28 @@ def fetch_and_write_trends_data():
     gc = gspread.service_account_from_dict(gcp_credentials_dict, scopes=scopes)
     spreadsheet = gc.open_by_key(spreadsheet_id)
     
-    # 3. Lấy từ khóa (giới hạn 100)
+    # 3. Lấy từ khóa
     print("3. Đang lấy danh sách từ khóa...")
     keyword_sheet = spreadsheet.worksheet('KEY')
-    keywords = [kw for kw in keyword_sheet.get_values('A1:A100') if kw[0]]
+    keywords = [kw[0] for kw in keyword_sheet.get_values('A1:A100') if kw and kw[0]]
     if not keywords:
         raise ValueError("Không có từ khóa nào trong sheet 'KEY' (A1:A100).")
-    keywords = [item[0] for item in keywords]
     print(f"   => Tìm thấy {len(keywords)} từ khóa.")
 
-    # 4. Lấy dữ liệu Google Trends
-    print("4. Đang lấy dữ liệu từ Google Trends...")
-    requests_args = {'headers': {'Cookie': google_nid_cookie}}
+    # 4. Cấu hình pytrends - Áp dụng cách của Replit
+    print("4. Đang cấu hình pytrends...")
+    
+    # TỐI ƯU HÓA: Tạo chuỗi cookie một cách an toàn, giống như Replit
+    # Điều này yêu cầu biến môi trường NID_COOKIE chỉ chứa GIÁ TRỊ, không chứa "NID="
+    requests_args = {
+        'headers': {'Cookie': f'NID={nid_cookie_value}'}
+    }
+    
+    # Khởi tạo pytrends không có timeout, để thư viện tự quản lý
     pytrends = TrendReq(hl='vi-VN', tz=420, requests_args=requests_args)
     
+    # 5. Lấy dữ liệu (giữ nguyên logic tạo bảng DỮ LIỆU ĐÚNG)
+    print("5. Đang lấy dữ liệu từ Google Trends...")
     all_trends_df = pd.DataFrame()
     for i, kw in enumerate(keywords):
         print(f"   - Đang xử lý: '{kw}' ({i+1}/{len(keywords)})")
@@ -56,21 +58,27 @@ def fetch_and_write_trends_data():
             pytrends.build_payload([kw], cat=0, timeframe='today 3-m', geo='VN', gprop='youtube')
             interest_df = pytrends.interest_over_time()
             if not interest_df.empty and kw in interest_df.columns:
+                print(f"     => TÌM THẤY DỮ LIỆU.")
+                # Giữ nguyên cách xử lý dữ liệu đúng để Apps Script có thể vẽ biểu đồ
                 all_trends_df[kw] = interest_df[kw]
         except Exception as e:
-            print(f"     => Lỗi với từ khóa '{kw}': {e}")
-            # Bỏ qua từ khóa này và tiếp tục
+            print(f"     => LỖI với từ khóa '{kw}': {e}")
+            # Nếu gặp lỗi 429, có thể tăng thời gian chờ ở đây
+            if "429" in str(e):
+                print("     => Lỗi 429, tạm nghỉ 30 giây...")
+                time.sleep(30)
             continue
         
-        sleep_time = random.uniform(3, 7)
-        print(f"     => Tạm nghỉ {sleep_time:.1f} giây...")
+        # Luôn tạm nghỉ giữa các request
+        sleep_time = random.uniform(5, 10)
+        print(f"     => Tạm nghỉ {sleep_time:.2f} giây...")
         time.sleep(sleep_time)
             
     if all_trends_df.empty:
         raise ValueError("Không lấy được bất kỳ dữ liệu nào từ Google Trends.")
         
-    # 5. Ghi dữ liệu vào Sheet
-    print("5. Đang ghi dữ liệu vào 'Trends_Data'...")
+    # 6. Ghi dữ liệu vào Sheet
+    print("6. Đang ghi dữ liệu vào 'Trends_Data'...")
     all_trends_df.reset_index(inplace=True)
     all_trends_df.rename(columns={'date': 'Ngày'}, inplace=True)
     all_trends_df['Ngày'] = all_trends_df['Ngày'].dt.strftime('%d/%m/%Y')
@@ -83,12 +91,8 @@ def fetch_and_write_trends_data():
     return f"Đã cập nhật thành công dữ liệu cho {len(all_trends_df.columns) - 1} từ khóa."
 
 
-# --- ĐỊNH NGHĨA ENDPOINT ---
 @app.route('/run-process', methods=['POST'])
 def handle_run_process():
-    """
-    Hàm này được kích hoạt khi có request POST đến /run-process.
-    """
     try:
         success_message = fetch_and_write_trends_data()
         return jsonify({'status': 'success', 'message': success_message}), 200
