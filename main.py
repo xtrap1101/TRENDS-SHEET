@@ -105,5 +105,9 @@ def handle_run_process():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 if __name__ == "__main__":
-    # Dòng này để chạy thử trên máy local, không dùng trên Render
-    app.run(debug=True, port=5001)
+    # Render cung cấp biến PORT, chúng ta sẽ dùng nó.
+    # Nếu không có (khi chạy ở máy local), dùng tạm port 5001.
+    port = int(os.environ.get("PORT", 5001))
+    
+    # Chạy server, host='0.0.0.0' để có thể truy cập từ bên ngoài.
+    app.run(debug=False, host='0.0.0.0', port=port)
