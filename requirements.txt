@@ -1,0 +1,7 @@
+pandas
+pytrends
+gspread
+gspread-dataframe
+google-auth
+Flask
+gunicorn
