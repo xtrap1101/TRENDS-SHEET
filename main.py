@@ -8,8 +8,9 @@ import google.auth
 import os
 import traceback
 import random
+import requests # <-- Thêm thư viện requests
+import io
 
-# Khởi tạo ứng dụng web
 app = Flask(__name__)
 
 # --- CẤU HÌNH ---
@@ -18,86 +19,101 @@ GCP_CREDENTIALS_JSON = os.environ.get('GCP_CREDENTIALS')
 NID_COOKIE = os.environ.get('NID_COOKIE')
 INPUT_SHEET_NAME = 'KEY'
 OUTPUT_SHEET_NAME = 'Trends_Data'
+TIMEFRAME = 'today 3-m'
+GEO = 'VN'
+GPROP = 'youtube'
 
 @app.route('/')
 def health_check():
-    """Cổng vào mặc định cho Render kiểm tra."""
-    return "Service is healthy.", 200
+    return "Service is healthy and ready.", 200
 
 @app.route('/run-process-now')
 def main_handler():
-    """Hàm này được kích hoạt khi có yêu cầu từ Google Sheet."""
     print("--- BẮT ĐẦU QUY TRÌNH THEO YÊU CẦU ---")
 
+    # --- Phần xác thực và đọc từ khóa giữ nguyên ---
     if not SPREADSHEET_ID or not GCP_CREDENTIALS_JSON:
         return ("LỖI CẤU HÌNH: Thiếu SPREADSHEET_ID hoặc GCP_CREDENTIALS.", 500)
     try:
-        with open('gcp_credentials.json', 'w') as f:
-            f.write(GCP_CREDENTIALS_JSON)
-
-        print("1. Đang xác thực với Google Sheets...")
+        with open('gcp_credentials.json', 'w') as f: f.write(GCP_CREDENTIALS_JSON)
         scopes = ['https://www.googleapis.com/auth/spreadsheets']
         gc = gspread.service_account(filename='gcp_credentials.json', scopes=scopes)
         spreadsheet = gc.open_by_key(SPREADSHEET_ID)
-        print("   => Xác thực thành công!")
     except Exception as e:
-        error_message = f"LỖI XÁC THỰC: {type(e).__name__} - {e}"
-        print(error_message)
-        traceback.print_exc()
-        return error_message
+        return f"LỖI XÁC THỰC: {type(e).__name__} - {e}"
 
-    print(f"2. Đang đọc từ khóa từ sheet '{INPUT_SHEET_NAME}'...")
     input_worksheet = spreadsheet.worksheet(INPUT_SHEET_NAME)
     keywords = [kw for kw in input_worksheet.col_values(1) if kw]
-    print(f"   => Tìm thấy {len(keywords)} từ khóa.")
     if not keywords: return "Không có từ khóa nào trong sheet 'KEY'"
 
-    print("3. Đang cấu hình pytrends...")
-    requests_args = {}
+    # --- NÂNG CẤP LOGIC LẤY DỮ LIỆU ---
+    print("3. Đang cấu hình Pytrends...")
+    session = requests.Session()
     if NID_COOKIE:
         print("   => Đã tìm thấy NID Cookie.")
-        requests_args['headers'] = {'Cookie': f'NID={NID_COOKIE}'}
+        session.headers.update({'Cookie': f'NID={NID_COOKIE}'})
     else:
         print("   => CẢNH BÁO: Không tìm thấy NID_COOKIE.")
-    pytrends = TrendReq(hl='vi-VN', tz=420, requests_args=requests_args)
+
+    pytrends = TrendReq(hl='vi-VN', tz=420, requests_session=session)
 
     list_of_dataframes = []
     found_data_count = 0
     for i, kw in enumerate(keywords):
         print(f"   - Đang xử lý từ khóa {i+1}/{len(keywords)}: '{kw}'")
         try:
-            pytrends.build_payload([kw], cat=0, timeframe='today 3-m', geo='VN', gprop='youtube')
-            interest_df = pytrends.interest_over_time()
-            if not interest_df.empty and kw in interest_df.columns:
+            # 1. Vẫn dùng build_payload để lấy token
+            pytrends.build_payload([kw], cat=0, timeframe=TIMEFRAME, geo=GEO, gprop=GPROP)
+
+            # 2. Lấy token từ pytrends
+            token = pytrends.interest_over_time_widget['token']
+
+            # 3. Xây dựng URL tải CSV trực tiếp
+            csv_url = f"https://trends.google.com/trends/api/widgetdata/multirange/csv?req={token}&token={token}&tz=420&hl=vi-VN"
+
+            # 4. Tải CSV bằng requests
+            response = session.get(csv_url, timeout=30)
+            response.raise_for_status() # Báo lỗi nếu status code không phải 200
+
+            # 5. Đọc CSV vào DataFrame
+            # Bỏ qua 2 dòng đầu không cần thiết trong file CSV của Google
+            csv_content = response.text.splitlines()[2:]
+            csv_string = "\n".join(csv_content)
+
+            if not csv_string:
+                print(f"     => KHÔNG tìm thấy dữ liệu (CSV rỗng).")
+                continue
+
+            interest_df = pd.read_csv(io.StringIO(csv_string))
+
+            if not interest_df.empty:
                 print(f"     => TÌM THẤY DỮ LIỆU.")
                 found_data_count += 1
-                interest_df.reset_index(inplace=True)
-                if 'isPartial' in interest_df.columns: interest_df = interest_df.drop(columns=['isPartial'])
-                interest_df['date'] = interest_df['date'].dt.strftime('%d/%m/%y')
-                interest_df.rename(columns={'date': f'Ngày ({kw})', kw: kw}, inplace=True)
+                # Đổi tên cột ngày thành 'date' và cột từ khóa thành tên của nó
+                interest_df.rename(columns={interest_df.columns[0]: 'date', interest_df.columns[1]: kw}, inplace=True)
+                # Chuyển đổi và định dạng lại cột ngày
+                interest_df['date'] = pd.to_datetime(interest_df['date']).dt.strftime('%d/%m/%y')
+                interest_df.rename(columns={'date': f'Ngày ({kw})'}, inplace=True)
                 list_of_dataframes.append(interest_df)
             else:
                 print(f"     => KHÔNG tìm thấy dữ liệu.")
 
-            random_delay = random.uniform(4, 8)
-            print(f"     => Tạm dừng {random_delay:.1f} giây để tránh bị chặn...")
-            time.sleep(random_delay)
-
-        except Exception as e:
-            print(f"     => LỖI CHI TIẾT với từ khóa '{kw}':")
-            if hasattr(e, 'response'):
-                print(f"        - Status Code: {e.response.status_code}")
-                print(f"        - Reason: {e.response.reason}")
-                print(f"        - Response Text: {e.response.text[:200]}")
-            else:
-                print(f"        - Lỗi không có phản hồi HTTP: {e}")
-
-            if '429' in str(e):
+        except requests.exceptions.HTTPError as e:
+            # Bắt lỗi HTTP, đặc biệt là lỗi 429
+            if e.response.status_code == 429:
                 print("     => Bị chặn (429). Đang dừng 15 giây...")
                 time.sleep(15)
-            continue
+            else:
+                print(f"     => LỖI HTTP với từ khóa '{kw}': {e}")
+        except Exception as e:
+            print(f"     => LỖI khác với từ khóa '{kw}': {e}")
 
-    print("4. Đang chuẩn bị ghi dữ liệu...")
+        # Luôn tạm dừng giữa các yêu cầu
+        random_delay = random.uniform(3, 6)
+        print(f"     => Tạm dừng {random_delay:.1f} giây...")
+        time.sleep(random_delay)
+
+    # --- Phần ghi dữ liệu giữ nguyên ---
     if list_of_dataframes:
         final_df = pd.concat(list_of_dataframes, axis=1)
         try:
@@ -112,7 +128,3 @@ def main_handler():
 
     print(f"--- KẾT THÚC QUY TRÌNH. KẾT QUẢ: {result_message} ---")
     return result_message
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
