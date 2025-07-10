@@ -1,0 +1,13 @@
+app = "ten-ung-dung-cua-ban" # Đổi tên ứng dụng này thành một tên duy nhất
+primary_region = "sin"      # Chọn khu vực gần nhất với người dùng của bạn (ví dụ: sin cho Singapore, fra cho Frankfurt)
+
+[build]
+  builder = "docker"
+
+[http_service]
+  internal_port = 5001      # Cổng mà container của bạn đang lắng nghe (đã định nghĩa trong Dockerfile)
+  force_https = true        # Buộc tất cả các kết nối phải là HTTPS
+  auto_stop_machines = true # Dừng máy ảo khi không có lưu lượng truy cập để tiết kiệm chi phí
+  auto_start_machines = true # Khởi động máy ảo khi có yêu cầu mới
+  min_machines_running = 0  # Cho phép giảm xuống 0 máy ảo nếu không hoạt động
+  processes = ["app"]
