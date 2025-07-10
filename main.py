@@ -8,7 +8,7 @@ import google.auth
 import os
 import traceback
 import random
-import requests # <-- Thêm thư viện requests
+import requests
 import io
 
 app = Flask(__name__)
@@ -46,14 +46,10 @@ def main_handler():
     keywords = [kw for kw in input_worksheet.col_values(1) if kw]
     if not keywords: return "Không có từ khóa nào trong sheet 'KEY'"
 
-    # --- NÂNG CẤP LOGIC LẤY DỮ LIỆU ---
-    print("3. Đang cấu hình Pytrends...")
+    # --- Logic lấy dữ liệu ---
     session = requests.Session()
     if NID_COOKIE:
-        print("   => Đã tìm thấy NID Cookie.")
         session.headers.update({'Cookie': f'NID={NID_COOKIE}'})
-    else:
-        print("   => CẢNH BÁO: Không tìm thấy NID_COOKIE.")
 
     pytrends = TrendReq(hl='vi-VN', tz=420, requests_session=session)
 
@@ -62,21 +58,12 @@ def main_handler():
     for i, kw in enumerate(keywords):
         print(f"   - Đang xử lý từ khóa {i+1}/{len(keywords)}: '{kw}'")
         try:
-            # 1. Vẫn dùng build_payload để lấy token
             pytrends.build_payload([kw], cat=0, timeframe=TIMEFRAME, geo=GEO, gprop=GPROP)
-
-            # 2. Lấy token từ pytrends
             token = pytrends.interest_over_time_widget['token']
-
-            # 3. Xây dựng URL tải CSV trực tiếp
             csv_url = f"https://trends.google.com/trends/api/widgetdata/multirange/csv?req={token}&token={token}&tz=420&hl=vi-VN"
-
-            # 4. Tải CSV bằng requests
             response = session.get(csv_url, timeout=30)
-            response.raise_for_status() # Báo lỗi nếu status code không phải 200
+            response.raise_for_status()
 
-            # 5. Đọc CSV vào DataFrame
-            # Bỏ qua 2 dòng đầu không cần thiết trong file CSV của Google
             csv_content = response.text.splitlines()[2:]
             csv_string = "\n".join(csv_content)
 
@@ -89,9 +76,7 @@ def main_handler():
             if not interest_df.empty:
                 print(f"     => TÌM THẤY DỮ LIỆU.")
                 found_data_count += 1
-                # Đổi tên cột ngày thành 'date' và cột từ khóa thành tên của nó
                 interest_df.rename(columns={interest_df.columns[0]: 'date', interest_df.columns[1]: kw}, inplace=True)
-                # Chuyển đổi và định dạng lại cột ngày
                 interest_df['date'] = pd.to_datetime(interest_df['date']).dt.strftime('%d/%m/%y')
                 interest_df.rename(columns={'date': f'Ngày ({kw})'}, inplace=True)
                 list_of_dataframes.append(interest_df)
@@ -99,7 +84,6 @@ def main_handler():
                 print(f"     => KHÔNG tìm thấy dữ liệu.")
 
         except requests.exceptions.HTTPError as e:
-            # Bắt lỗi HTTP, đặc biệt là lỗi 429
             if e.response.status_code == 429:
                 print("     => Bị chặn (429). Đang dừng 15 giây...")
                 time.sleep(15)
@@ -108,8 +92,9 @@ def main_handler():
         except Exception as e:
             print(f"     => LỖI khác với từ khóa '{kw}': {e}")
 
-        # Luôn tạm dừng giữa các yêu cầu
-        random_delay = random.uniform(3, 6)
+        # === THAY ĐỔI DUY NHẤT TẠI ĐÂY ===
+        random_delay = random.uniform(2, 6) # Dừng ngẫu nhiên từ 2 đến 6 giây
+        # ==================================
         print(f"     => Tạm dừng {random_delay:.1f} giây...")
         time.sleep(random_delay)
 
