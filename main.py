@@ -1,113 +1,109 @@
-import pandas as pd
-from pytrends.request import TrendReq
-from gspread_dataframe import set_with_dataframe
-import time
-import gspread
 import os
 import json
+import pandas as pd
+from flask import Flask, jsonify
+from pytrends.request import TrendReq
+import gspread
+from gspread_dataframe import set_with_dataframe
+import time
 
-def run_process():
+# Khởi tạo ứng dụng Flask
+app = Flask(__name__)
+
+# --- HÀM LOGIC CỐT LÕI ---
+def fetch_and_write_trends_data():
     """
-    Hàm chính để thực hiện toàn bộ quá trình:
-    1. Lấy thông tin cấu hình từ Biến Môi trường.
-    2. Xác thực với Google Sheets.
-    3. Đọc danh sách từ khóa.
-    4. Dùng pytrends để lấy dữ liệu với cookie.
-    5. Ghi dữ liệu vào sheet.
+    Hàm này chứa toàn bộ logic xử lý:
+    1. Đọc cấu hình từ Biến Môi trường.
+    2. Xác thực và kết nối Google Sheets.
+    3. Lấy danh sách từ khóa.
+    4. Lấy dữ liệu từ Google Trends.
+    5. Định dạng lại dữ liệu và ghi vào Sheet.
     """
-    print("--- BẮT ĐẦU QUY TRÌNH TỰ ĐỘNG ---")
+    print("--- BẮT ĐẦU QUY TRÌNH LẤY DỮ LIỆU ---")
 
-    # 1. Lấy thông tin cấu hình từ Biến Môi trường
-    print("1. Đang đọc cấu hình từ Biến Môi trường...")
-    try:
-        # Lấy nội dung file JSON từ biến môi trường
-        gcp_credentials_str = os.environ.get('GCP_CREDENTIALS')
-        if not gcp_credentials_str:
-            raise ValueError("Biến môi trường GCP_CREDENTIALS không được thiết lập.")
-        gcp_credentials_dict = json.loads(gcp_credentials_str)
+    # 1. Đọc cấu hình
+    print("1. Đang đọc cấu hình...")
+    gcp_credentials_str = os.environ.get('GCP_CREDENTIALS')
+    spreadsheet_id = os.environ.get('SPREADSHEET_ID')
+    google_nid_cookie = os.environ.get('GOOGLE_NID_COOKIE')
 
-        spreadsheet_id = os.environ.get('SPREADSHEET_ID')
-        if not spreadsheet_id:
-            raise ValueError("Biến môi trường SPREADSHEET_ID không được thiết lập.")
-
-        google_nid_cookie = os.environ.get('GOOGLE_NID_COOKIE')
-        if not google_nid_cookie:
-            raise ValueError("Biến môi trường GOOGLE_NID_COOKIE không được thiết lập.")
-
-        print("   => Đọc cấu hình thành công!")
-    except Exception as e:
-        print(f"LỖI CẤU HÌNH: {e}")
-        return
-
-    # 2. Xác thực với Google Sheets
-    try:
-        print("2. Đang xác thực với Google Sheets...")
-        scopes = ['https://www.googleapis.com/auth/spreadsheets']
-        # Xác thực bằng dictionary thay vì file
-        gc = gspread.service_account_from_dict(gcp_credentials_dict, scopes=scopes)
-        spreadsheet = gc.open_by_key(spreadsheet_id)
-        print("   => Xác thực thành công!")
-    except Exception as e:
-        print(f"LỖI XÁC THỰC GOOGLE SHEETS: {e}")
-        return
-
-    # 3. Đọc từ khóa
-    print("3. Đang đọc từ khóa...")
-    input_worksheet = spreadsheet.worksheet('KEY')
-    keywords = [kw for kw in input_worksheet.col_values(1) if kw]
-    print(f"   => Tìm thấy {len(keywords)} từ khóa.")
+    if not all([gcp_credentials_str, spreadsheet_id, google_nid_cookie]):
+        raise ValueError("Thiếu một trong các biến môi trường: GCP_CREDENTIALS, SPREADSHEET_ID, GOOGLE_NID_COOKIE")
+    
+    gcp_credentials_dict = json.loads(gcp_credentials_str)
+    
+    # 2. Xác thực Google Sheets
+    print("2. Đang xác thực với Google Sheets...")
+    scopes = ['https://www.googleapis.com/auth/spreadsheets']
+    gc = gspread.service_account_from_dict(gcp_credentials_dict, scopes=scopes)
+    spreadsheet = gc.open_by_key(spreadsheet_id)
+    
+    # 3. Lấy từ khóa (giới hạn 100)
+    print("3. Đang lấy danh sách từ khóa...")
+    keyword_sheet = spreadsheet.worksheet('KEY')
+    # Lấy giá trị từ A1 đến A100, lọc bỏ các giá trị rỗng
+    keywords = [kw for kw in keyword_sheet.get_values('A1:A100') if kw[0]]
     if not keywords:
-        print("Không có từ khóa nào. Kết thúc.")
-        return
+        raise ValueError("Không có từ khóa nào trong sheet 'KEY' (A1:A100).")
+    keywords = [item[0] for item in keywords] # Chuyển list của list thành list
+    print(f"   => Tìm thấy {len(keywords)} từ khóa.")
 
-    # 4. Lấy dữ liệu từ Google Trends (sử dụng Cookie)
-    print("4. Đang cấu hình pytrends với cookie...")
-    # Thêm cookie vào header của request để tránh bị chặn
-    requests_args = {
-        'headers': {
-            'Cookie': google_nid_cookie
-        }
-    }
+    # 4. Lấy dữ liệu Google Trends
+    print("4. Đang lấy dữ liệu từ Google Trends...")
+    requests_args = {'headers': {'Cookie': google_nid_cookie}}
     pytrends = TrendReq(hl='vi-VN', tz=420, requests_args=requests_args)
-
+    
     all_trends_df = pd.DataFrame()
     for i, kw in enumerate(keywords):
-        print(f"   - Đang xử lý từ khóa {i+1}/{len(keywords)}: '{kw}'")
+        print(f"   - Đang xử lý: '{kw}' ({i+1}/{len(keywords)})")
         try:
-            pytrends.build_payload(
-                [kw], cat=0, timeframe='today 3-m', geo='VN', gprop='youtube'
-            )
+            pytrends.build_payload([kw], cat=0, timeframe='today 3-m', geo='VN', gprop='youtube')
             interest_df = pytrends.interest_over_time()
-            if not interest_df.empty:
-                # Chỉ lấy cột dữ liệu của từ khóa và loại bỏ cột 'isPartial'
+            if not interest_df.empty and kw in interest_df.columns:
+                # Chỉ lấy cột điểm số và đổi tên thành tên từ khóa
                 all_trends_df[kw] = interest_df[kw]
-            else:
-                print(f"     => KHÔNG tìm thấy dữ liệu.")
-            time.sleep(2)  # Vẫn nên có một khoảng nghỉ nhỏ
+            time.sleep(1) # Nghỉ 1 giây giữa các request
         except Exception as e:
-            print(f"     => LỖI với từ khóa '{kw}': {e}")
-            # Nếu có lỗi, tạo một cột rỗng để không làm hỏng cấu trúc
-            all_trends_df[kw] = None
+            print(f"     => Lỗi với từ khóa '{kw}': {e}")
             continue
-
-    # 5. Ghi kết quả vào Google Sheet
-    if not all_trends_df.empty:
-        print("5. Đang chuẩn bị và ghi dữ liệu...")
-        # Đặt lại index để cột 'date' trở thành cột 'Ngày'
-        all_trends_df.reset_index(inplace=True)
-        all_trends_df.rename(columns={'date': 'Ngày'}, inplace=True)
+            
+    if all_trends_df.empty:
+        raise ValueError("Không lấy được bất kỳ dữ liệu nào từ Google Trends.")
         
-        try:
-            output_worksheet = spreadsheet.worksheet('Trends_Data')
-            output_worksheet.clear()
-            set_with_dataframe(output_worksheet, all_trends_df, include_index=False, resize=True)
-            print("   => Ghi dữ liệu thành công!")
-        except gspread.exceptions.WorksheetNotFound:
-            print("Sheet 'Trends_Data' không tồn tại. Vui lòng tạo sheet này trước khi chạy.")
-    else:
-        print("Không có dữ liệu nào để ghi.")
+    # 5. Ghi dữ liệu vào Sheet
+    print("5. Đang ghi dữ liệu vào 'Trends_Data'...")
+    # Đặt lại index để cột 'date' trở thành một cột thông thường
+    all_trends_df.reset_index(inplace=True)
+    # Đổi tên cột 'date' thành 'Ngày' và định dạng lại ngày tháng
+    all_trends_df.rename(columns={'date': 'Ngày'}, inplace=True)
+    all_trends_df['Ngày'] = all_trends_df['Ngày'].dt.strftime('%d/%m/%Y')
+    
+    data_sheet = spreadsheet.worksheet('Trends_Data')
+    data_sheet.clear()
+    set_with_dataframe(data_sheet, all_trends_df, include_index=False, resize=True)
+    
+    print("--- HOÀN TẤT GHI DỮ LIỆU ---")
+    return f"Đã cập nhật thành công dữ liệu cho {len(all_trends_df.columns) - 1} từ khóa."
 
-    print("--- HOÀN TẤT ---")
 
-if __name__ == '__main__':
-    run_process()
+# --- ĐỊNH NGHĨA ENDPOINT ---
+# Đây là URL mà Google Apps Script sẽ gọi đến
+@app.route('/run-process', methods=['POST'])
+def handle_run_process():
+    """
+    Hàm này được kích hoạt khi có request POST đến /run-process.
+    """
+    try:
+        # Gọi hàm logic chính
+        success_message = fetch_and_write_trends_data()
+        # Trả về thông báo thành công dưới dạng JSON
+        return jsonify({'status': 'success', 'message': success_message}), 200
+    except Exception as e:
+        # Nếu có lỗi, ghi log và trả về thông báo lỗi
+        print(f"LỖI TOÀN QUY TRÌNH: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+if __name__ == "__main__":
+    # Dòng này để chạy thử trên máy local, không dùng trên Render
+    app.run(debug=True, port=5001)
