@@ -5,3 +5,4 @@ gspread-dataframe
 google-auth
 Flask
 gunicorn
+requests
