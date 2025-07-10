@@ -63,7 +63,7 @@ def fetch_and_write_trends_data():
             continue
         
         sleep_time = random.uniform(3, 7)
-        print(f"     => Tạm nghỉ {sleep_time:.2f} giây...")
+        print(f"     => Tạm nghỉ {sleep_time:.1f} giây...")
         time.sleep(sleep_time)
             
     if all_trends_df.empty:
